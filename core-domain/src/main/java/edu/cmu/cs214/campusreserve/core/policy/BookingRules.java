@@ -122,6 +122,16 @@ public final class BookingRules {
         return Optional.empty();
     }
 
+    /**
+     * May {@code requesterId} change {@code booking} right now? The window is the
+     * same as for cancelling: only the owner, only while the booking still holds
+     * the room, and only until the moment it starts. The reasons come back in the
+     * same order.
+     */
+    public Optional<RejectionReason> checkModifiable(Booking booking, String requesterId) {
+        return checkCancellable(booking, requesterId);
+    }
+
     /** Is the booking still in the future? */
     public boolean isUpcoming(Booking booking) {
         return !booking.hasStartedBy(now());

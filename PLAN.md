@@ -203,10 +203,27 @@ Run exactly ONE task from your plan with the agent, under the guardrail, through
 its gate. Any task whose dependencies are done qualifies, including the
 smallest one.
 
-**The takeover point.** Write this before you start the run. A concrete,
-conditional statement of when you would stop the agent and write the code
-yourself. "If something looks wrong" does not count. Name the trigger and name
-what you would do.
+**The task.** T1, a booker can modify their upcoming booking in the domain
+(`core-domain` only, no dependencies). Run by a fresh implementer agent given
+the T1 entry above as its brief, under the recipe C lock.
+
+**The takeover point.** Written and committed before the run started. I stop
+the agent and write the code myself when any one of these fires:
+
+1. `git add -N . && git diff --stat` lists a path outside `core-domain/`, or a
+   file under `core-domain/src/test/` that exists in the starter commit
+   `3a9923d` (a shipped test). I `git checkout -- <path>` that file, delete any
+   new file outside `core-domain/`, and redo whatever that edit was for by hand.
+2. The T1 diff contains a comparison of interval endpoints
+   (`grep -nE "isBefore|isAfter|compareTo"` on added lines outside
+   `TimeInterval`) or a `waitlist.save`/`waitlist.remove` call outside the
+   existing `joinWaitlist`, `leaveWaitlist`, and `promoteWaitlist`. I delete
+   that code and write the self-exclusion myself as a filtered list handed to
+   `conflictChecker.hasConflict`, and the promotion as a call to
+   `promoteWaitlist(roomId)`.
+3. The gate `mvn -pl core-domain -am test` is still red after the agent's
+   second attempt at the same failure. I stop it, read the first failing
+   test, and fix that test's cause myself.
 
 **The evidence.** Name the task from Milestone 1. Paste the result line of its
 gate command (run it without `-q` so the line is in the output) and the result

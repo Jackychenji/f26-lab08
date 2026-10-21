@@ -225,19 +225,195 @@ the agent and write the code myself when any one of these fires:
    second attempt at the same failure. I stop it, read the first failing
    test, and fix that test's cause myself.
 
-**The evidence.** Name the task from Milestone 1. Paste the result line of its
-gate command (run it without `-q` so the line is in the output) and the result
-line of one `mvn -B clean test` run after the task was finished. The module
-gate cannot see a cross-module compile break on a warm tree. A cold build can,
-and so can CI.
+None of the three triggers fired: the diff stayed inside `core-domain/` and
+touched no file that exists in `3a9923d`, the grep found no interval-endpoint
+comparison and no new waitlist write, and the gate was green when the agent
+handed back.
 
-**The diff.** The files the agent changed, and how each one maps to that task's
-declared scope (plain `git diff` leaves out new files, but
-`git add -N . && git diff --stat` includes them). Note anything it touched that
-you did not expect, including any shipped test. Then quote the one line you
-read hardest and say what you were checking for.
+**The evidence.** Task T1. Gate, run by me after the agent finished, without
+`-q`, with the lock on:
 
-**The refuter.** What you gave it and what you asked it to do (paste the
-brief). Then the one finding you settled, and how (the new failing test with
-its red run, or the evidence that dismissed it). If nothing it reported held
-up, say how you checked its strongest claim.
+```text
+$ mvn -pl core-domain -am test
+[INFO] Tests run: 33, Failures: 0, Errors: 0, Skipped: 0, ... -- in edu.cmu.cs214.campusreserve.core.service.BookingServiceModifyTest
+[INFO] Tests run: 200, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+```
+
+200 is the shipped 167 plus 33 new (26 test methods, one of them a
+parameterized test with 7 cases, one per interval rule). Then one cold build,
+still locked (afterwards `find billing/src cli/src accounts/src -writable` still
+listed 0 files):
+
+```text
+$ mvn -B clean test
+[INFO] Tests run: 200, Failures: 0, Errors: 0, Skipped: 0    (core-domain)
+[INFO] Tests run: 63, Failures: 0, Errors: 0, Skipped: 0     (storage)
+[INFO] Tests run: 41, Failures: 0, Errors: 0, Skipped: 0     (notifications)
+[INFO] Tests run: 19, Failures: 0, Errors: 0, Skipped: 0     (accounts)
+[INFO] Tests run: 19, Failures: 0, Errors: 0, Skipped: 0     (billing)
+[INFO] Tests run: 78, Failures: 0, Errors: 0, Skipped: 0     (http-api)
+[INFO] Tests run: 31, Failures: 0, Errors: 0, Skipped: 0     (cli)
+[INFO] BUILD SUCCESS
+```
+
+451 Java tests (418 + 33). The cold build matters here because `Booking`
+gained a record component that every other module compiles against.
+
+**The diff.** `git add -N . && git diff --stat`:
+
+```text
+ core-domain/.../core/domain/Booking.java                    |  41 +-
+ core-domain/.../core/domain/BookingChange.java              |  41 ++   (new)
+ core-domain/.../core/domain/ModificationResult.java         |  90 ++++ (new)
+ core-domain/.../core/policy/BookingRules.java               |  10 +
+ core-domain/.../core/service/BookingService.java            |  80 +++-
+ core-domain/.../core/service/BookingServiceModifyTest.java  | 497 +++++ (new)
+ 6 files changed, 752 insertions(+), 7 deletions(-)
+```
+
+| File | Maps to T1 how |
+|---|---|
+| `domain/Booking.java` | The history decision: an 8th component `history`, `confirmed(...)` still six arguments with an empty history, `cancelled()` keeps the history, new `modified(...)` appends one `BookingChange` and refuses a no-op, `hasDetails(...)` for the no-op check. |
+| `domain/BookingChange.java` | The history entry: changedAt, previous interval and attendees, new interval and attendees. |
+| `domain/ModificationResult.java` | The sealed result: `Modified(before, after, promotions)`, `Unchanged`, `Rejected`. |
+| `policy/BookingRules.java` | Clause 1: `checkModifiable`, which delegates to `checkCancellable` (owner, then not cancelled, then not started). |
+| `service/BookingService.java` | `modifyBooking` in the planned check order, plus a private `excluding(list, id)` helper for the self-exclusion. |
+| `service/BookingServiceModifyTest.java` | Every case the T1 checkpoint names, including the stranded-waiter test for the blind spot. |
+
+Not expected, all accepted: `Rejected` carries a `detail` string next to the
+reason, the same shape as `CancellationResult.Rejected` (the plan said
+`Rejected(reason)`); `BookingRules.checkModifiable` is a one-line alias I had
+not planned; `Booking`'s `equals` and `toString` now include the history. No
+shipped test was touched: none of the six paths exists in `3a9923d`. Nothing
+outside `core-domain/`.
+
+The line I read hardest, in `BookingService.modifyBooking`:
+
+```java
+List<CancellationResult.Promotion> promotions =
+    intervalChanged ? promoteWaitlist(modified.roomId()) : List.of();
+```
+
+I was checking two things. The condition is the interval only
+(`!booking.interval().equals(newInterval)`), so an attendee-only change starts
+no pass and a pure lengthening still runs one (clause 4). And it sits after
+`bookings.save(modified)`: promotion re-checks waiters against the room's
+current bookings, so if it ran before the save it would still see the old
+interval. A waiter could then be promoted into time the booking had just moved
+into, which is a double booking (AGENTS.md rule 4).
+
+**The refuter.** A fresh agent started after the closing build, with no
+context from the implementer run. It got three things: `CHANGE-REQUEST.md`, the
+T1 diff (`git add -N . && git diff`, saved to a file), and T1's one-line scope.
+It was told not to read this file. The brief, as sent:
+
+<details>
+<summary>Refuter brief (click to open)</summary>
+
+```text
+You are a refuter. Your job is to break a change someone else made, not to fix it.
+
+What you get, and only this
+1. The product request: CHANGE-REQUEST.md (read it in full).
+2. The task's diff: t1.diff (the output of `git add -N . && git diff`; those
+   changes are applied in the working tree).
+3. The task's one-line scope: T1. A booker can modify their upcoming booking in
+   the domain: BookingService.modifyBooking(bookingId, requesterId, newInterval,
+   newAttendees) in core-domain only, covering change-request clauses 1 to 4 and
+   the domain half of 5 (history recorded on the booking; a no-op records
+   nothing). The booking-modified event, notifications, HTTP, and analytics are
+   later tasks and are NOT part of T1.
+
+Do not read PLAN.md. You may read any source file the diff calls into, and
+AGENTS.md for the house rules.
+
+What to do
+Find inputs or call sequences where modifyBooking (or the changed Booking) does
+the wrong thing according to CHANGE-REQUEST.md clauses 1 to 5 (domain half), or
+breaks AGENTS.md rules 2 to 5. "Wrong" means a concrete call sequence whose
+observable result (return value, stored bookings, waitlist rows, published
+events, history) contradicts a specific line of the change request or AGENTS.md.
+
+Start here, it is the place the plan says the gate is blind: "If an
+attendee-only change still calls promoteWaitlist, a test where nobody is
+waiting passes anyway. It only shows up with a waiter whose slot is already
+free but who was skipped by an earlier pass (their own calendar was busy
+then)." Then go clause by clause. Also think about: ordering of checks and which
+reason wins; self-exclusion done wrong (by interval instead of id, or only in
+one of the two calendars); promotion running before or after the save;
+promotion creating a double booking; a waiter who is the booker themselves;
+history content and immutability; time edges (half-open intervals, midnight,
+the started-at boundary, minute truncation); bookings that were promoted off
+the waitlist and then modified; a booking modified twice;
+cancelled-then-modified.
+
+To check a suspicion, write a probe test as a NEW file named
+RefuterProbe*Test.java under core-domain/src/test/.../core/service/ and run
+  mvn -pl core-domain -am test -Dtest=RefuterProbe*Test -Dsurefire.failIfNoSpecifiedTests=false
+Never edit main code or an existing test; read-only git only; leave billing,
+cli, accounts alone. Leave probe files in place and list them.
+
+Report: each finding (call sequence, expected vs actual, the exact line it
+contradicts, red probe output or "reasoning only"), then the suspicions that
+turned out fine, then every probe file you created.
+```
+
+</details>
+
+It wrote 21 probes; 20 passed. It also confirmed the plan's blind spot is
+covered: an attendee-only change with a stranded waiter promotes nobody.
+
+**The finding I settled: dismissed.** Its one red probe:
+`probeLengthenOnlyPromotesNobodyEvenWithAStrandedWaiter`. u-5 waits in r-1 for
+16:00-17:00. That slot is already free, but an earlier pass skipped u-5 because
+u-5 was busy elsewhere then. u-1 lengthens 10:00-11:00 to 10:00-11:30, and the
+pass that follows promotes u-5. The claim: clause 4 says "A modification that
+only lengthens a booking frees nothing either. Running the pass and promoting
+nobody is the right outcome there." I re-ran the probe myself and it was red:
+
+```text
+[ERROR] RefuterProbeModifyTest.probeLengthenOnlyPromotesNobodyEvenWithAStrandedWaiter:52
+  lengthen-only promoted: [Promotion[entry=WaitlistEntry[id=wl-2, roomId=r-1, userId=u-5,
+  interval=[2026-10-20T16:00:00Z, 2026-10-20T17:00:00Z) ...]] ==> expected: <[]> but was: <[Promotion[...]]>
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0
+```
+
+Why I dismissed it:
+
+1. The same clause fixes the trigger, not the result: "The promotion pass runs
+   when a successful modification changed the interval", and it is "the same
+   first in, first out waitlist promotion that a cancellation triggers today".
+   An attendee-only change is the one case where it "starts no promotion".
+2. A run shows what that pass does today. `SettleFindingCancelPassTest` uses
+   only the shipped `cancelBooking` path. It sets up the same stranded u-5, then
+   cancels an unrelated 10:00-11:00 booking, and u-5 is promoted into
+   16:00-17:00. The pass covers the whole room, not just the freed time:
+
+   ```text
+   [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0 -- in ...SettleFindingCancelPassTest
+   [INFO] BUILD SUCCESS
+   ```
+
+   So "running the pass and promoting nobody" describes the normal state, where
+   nobody is stranded. With a stranded waiter, running "the same" pass must
+   promote them. Limiting the pass to freed time would also take a second
+   promotion path plus interval arithmetic on old minus new, which runs into
+   AGENTS.md rules 3 and 4.
+
+T1's own test `anyIntervalChangeRunsThePassSoTheSameStrandedWaiterIsPromoted`
+already pins this reading. I did not change the code. The probe file and the
+evidence test were moved out of the repository (`git status` is clean apart
+from this file). They are kept, with their run logs, next to the guardrail
+capture.
+
+Not settled, noted:
+- *Finding 2, reasoning only.* `Booking.modified` and `BookingChange` do not
+  check status or "something changed" on their own. Only `modifyBooking` does,
+  and no service path reaches the gap.
+- *Outside T1, for the product owner.* The refuter observed that billing prices
+  a booking when the CLI issues the invoice, not when it is booked
+  (`InvoiceService.issueFor`). So a booking modified before it is first
+  invoiced would be billed at its new length. Billing is out of scope and
+  locked, so this is a question for whoever owns the "price does not change"
+  line, not a change I made.

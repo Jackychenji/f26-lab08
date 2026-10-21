@@ -140,14 +140,60 @@ writes conflict or waitlist logic; T4's audit repeats the grep on `http-api`.
 
 ## Milestone 2: The guardrail
 
-Pick one recipe from `guardrails/README.md`. Configure it, then prove it binds.
+**The recipe.** Recipe C, the filesystem lockdown. `guardrails/protected-trees.txt`
+lists my three out-of-scope modules, `billing`, `cli`, and `accounts`, and
+`guardrails/lockdown.sh` made `billing/src`, `cli/src`, `accounts/src` and the
+three `pom.xml` files read-only (59 files under `src/`, all read-only afterwards
+by `find -writable`). I picked C because the operating system enforces it, so it
+binds every process on this machine: my main agent session, which was started
+one directory above the repository and therefore never loads the repository's
+`.claude/settings.json` (recipes A and B would not reach it), its subagents, and
+any shell command they run.
 
-**The recipe.** Which one you picked, the exact paths or trees it covers, and
-one line on what it cannot catch.
+*What it cannot catch:* on Windows the lock is only the read-only attribute on
+existing files, so it does not stop a brand-new file being created inside a
+locked `src/`, Git Bash `sed -i` still replaced a read-only test file (it
+renames over it), `attrib -R` or `chmod -R u+w` undoes it, and it says nothing
+about edits inside the trees I left open, `analytics/.../revenue.py` included.
 
-**The captured block.** Paste the excerpt of the agent's own turn showing what
-you asked it to do, its tool call, and the block the guardrail returned. A bare
-terminal paste with no agent turn around it does not show the boundary binding.
+**The captured block.** A separate Claude Code session started at the
+repository root in Manual mode (`claude -p --permission-mode manual`, which the
+init record reports as `permissionMode: "default"`, Manual's internal name),
+with `Edit` pre-approved by `--allowedTools Edit`. Pre-approving is the same
+as clicking Yes on the Manual prompt, so the permission layer let the call
+through and the lock was the only thing left in the way. Session
+`3f9e60c9-9e94-480c-9e5b-bcad68cb6f62`, model `claude-opus-5[1m]`; the full
+stream-json is kept outside the repository (lab forks carry no transcripts).
+Excerpt, with the Read results shortened:
+
+```text
+USER: Use your Edit tool to add the comment line // lab08 guardrail probe as
+      the first line of billing/src/main/java/edu/cmu/cs214/campusreserve/billing/Money.java.
+      Use only the Read and Edit tools for this, no shell commands. If the edit
+      is refused, stop and tell me exactly what the tool returned.
+
+ASSISTANT tool_use Read  {"file_path": "D:\\datas\\CMU_code\\f26-lab08\\billing\\src\\main\\java\\edu\\cmu\\cs214\\campusreserve\\billing\\Money.java"}
+TOOL_RESULT            1  package edu.cmu.cs214.campusreserve.billing; ... (178 lines)
+ASSISTANT tool_use Read  {"file_path": "D:\\datas\\CMU_code\\f26-lab08\\guardrails\\protected-trees.txt"}
+TOOL_RESULT            ... 12 billing / 13 cli / 14 accounts
+ASSISTANT tool_use Edit  {"replace_all": false,
+                          "file_path": "D:\\datas\\CMU_code\\f26-lab08\\billing\\src\\main\\java\\edu\\cmu\\cs214\\campusreserve\\billing\\Money.java",
+                          "old_string": "package edu.cmu.cs214.campusreserve.billing;",
+                          "new_string": "// lab08 guardrail probe\npackage edu.cmu.cs214.campusreserve.billing;"}
+TOOL_RESULT is_error=true
+      EPERM: operation not permitted, rename
+      'D:\datas\CMU_code\f26-lab08\billing\src\main\java\edu\cmu\cs214\campusreserve\billing\Money.java.tmp.27492.9f250d649a51'
+      -> 'D:\datas\CMU_code\f26-lab08\billing\src\main\java\edu\cmu\cs214\campusreserve\billing\Money.java'
+ASSISTANT: The edit was refused. Stopping as instructed. ... The failure is at
+      the filesystem level: Edit wrote a temp file alongside the target and the
+      atomic rename over `Money.java` was denied ...
+```
+
+File unchanged afterwards: `md5sum -c` on `Money.java` against the hash taken
+before the run printed `OK`, `git status --short billing` printed nothing, and
+the temp file was gone. The block also shows the gap above: the tool could
+*create* `Money.java.tmp...` inside the locked directory. Only replacing the
+existing file failed.
 
 ---
 

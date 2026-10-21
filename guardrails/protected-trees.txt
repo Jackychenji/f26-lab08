@@ -9,4 +9,6 @@
 # this repository. lockdown.sh locks each entry's src/ directory and its
 # pom.xml, and leaves target/ writable so every gate still runs while locked.
 
-MODULE-YOU-ARE-NOT-TOUCHING
+billing
+cli
+accounts
